@@ -75,7 +75,8 @@ class DistFPGrowth (
 
   /** Compute the minimum support according to the support threshold. */
   def run(data: RDD[String]): RDD[(String, Long)] = {
-    val minSupport = supportThreshold * data.count()
+    DistFPGrowth.NumberOfDB = data.count()
+    val minSupport = supportThreshold * DistFPGrowth.NumberOfDB
     run(data, minSupport)
   }
 
@@ -89,9 +90,10 @@ class DistFPGrowth (
     // For short, we just call it support. After that, we will filter fList
     // by minSupport and sort it by items' supports.
     val fList = data.flatMap(line => line.split(splitterPattern))
-      .map(item => (item, 1L)).reduceByKey(_ + _).filter(_._2 >= minSupport)
+      .map(item => (item, 1L)).reduceByKey(_ + _, 192).filter(_._2 >= minSupport)
       .sortBy(pair => pair._2, false)
     val localFList = fList.collect()
+    DistFPGrowth.LengthOfFreqList = localFList.length
 
     // For the convenience of dividing all items in fList to numGroups groups,
     // we assign a unique ID which starts from 0 to every item in fList.
@@ -106,8 +108,8 @@ class DistFPGrowth (
     // Step 2: Run classical FPGrowth on each group.
     val retRDD = data.map(record => record.split(splitterPattern))
       .flatMap(record => TransactionsGenerator().run(record, bcFMap, numPerGroup))
-      .groupByKey.flatMap(record => FPGrowth().run(record, minSupport))
-      .groupByKey().map(record => (record._1, record._2.max))
+      .groupByKey(DistFPGrowth.DEFAULT_NUM_GROUPS).flatMap(record => FPGrowth().run(record, minSupport))
+      .groupByKey(DistFPGrowth.DEFAULT_NUM_GROUPS).map(record => (record._1, record._2.max))
 
     // Add frequent 1-itemsets into retRDD.
     retRDD.++(fList)
@@ -191,6 +193,13 @@ class DistFPGrowth (
     def buildHeaderTable(
         data: Iterable[ArrayBuffer[String]],
         minSupport: Double): ArrayBuffer[TreeNode] = {
+      println("data")
+      for(i <- data) {
+        for(j <- i) {
+          print(j + " ")
+        }
+        print("\r\n")
+      }
       if (data.nonEmpty) {
         val map: HashMap[String, TreeNode] = new HashMap[String, TreeNode]()
         for (record <- data) {
@@ -204,6 +213,7 @@ class DistFPGrowth (
             }
           }
         }
+
         val headerTable = new ArrayBuffer[TreeNode]()
         map.filter(_._2.count >= minSupport).values.toArray
           .sortWith(_.count > _.count).copyToBuffer(headerTable)
@@ -296,6 +306,9 @@ class DistFPGrowth (
         prefix: ArrayBuffer[String],
         minSupport: Double) {
       val headerTable: ArrayBuffer[TreeNode] = buildHeaderTable(transactions, minSupport)
+      for(i <- headerTable) {
+        println(i.name + " " + i.count)
+      }
 
       val treeRoot = buildLocalFPTree(transactions, headerTable)
 
@@ -307,6 +320,7 @@ class DistFPGrowth (
             tempArr += node.name
             for (pattern <- prefix) {
               tempArr += pattern.toString
+
             }
             tempStr += tempArr.sortWith(_ < _).mkString(" ").toString
             retArr += tempStr -> node.count
@@ -326,17 +340,27 @@ class DistFPGrowth (
             var counter: Long = backNode.count
             val preNodes: ArrayBuffer[String] = new ArrayBuffer[String]()
             var parent: TreeNode = backNode.parent
-            while (parent.name != null) {
-              preNodes += parent.name
-              parent = parent.parent
-            }
-            while (counter > 0) {
-              newTransactions += preNodes
-              counter -= 1
+            if(parent != null) {
+              while (parent.name != null) {
+                preNodes += parent.name
+                parent = parent.parent
+              }
+              while (counter > 0) {
+                newTransactions += preNodes
+                counter -= 1
+              }
+
             }
             backNode = backNode.nextHomonym
           }
 
+          for(i <- newTransactions) {
+            println(i.length)
+            for(j <- i) {
+              print(j + " ")
+            }
+            print("\r\n")
+          }
           fpgrowth(newTransactions, newPostPattern, minSupport)
         }
 
@@ -353,7 +377,10 @@ object DistFPGrowth {
   // Default values.
   val DEFAULT_SUPPORT_THRESHOLD = 0
   val DEFAULT_SPLITTER_PATTERN = " "
-  val DEFAULT_NUM_GROUPS = 128
+  val DEFAULT_NUM_GROUPS = 1
+
+  var LengthOfFreqList = 0
+  var NumberOfDB = 0L
 
   /**
    * Run DistFPGrowth using the given set of parameters.
